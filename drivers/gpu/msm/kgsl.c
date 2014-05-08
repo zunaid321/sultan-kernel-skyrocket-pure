@@ -264,7 +264,6 @@ kgsl_mem_entry_destroy(struct kref *kref)
 	 */
 
 	if (entry->memtype == KGSL_MEM_ENTRY_ION) {
-		ion_unmap_dma(kgsl_ion_client, entry->priv_data);
 		entry->memdesc.sg = NULL;
 	}
 
@@ -858,11 +857,11 @@ static void kgsl_destroy_process_private(struct kref *kref)
 	if (private->debug_root)
 		debugfs_remove_recursive(private->debug_root);
 
-	kgsl_mmu_putpagetable(private->pagetable);
-	idr_destroy(&private->mem_idr);
-
 	list_del(&private->list);
 	mutex_unlock(&kgsl_driver.process_mutex);
+
+	kgsl_mmu_putpagetable(private->pagetable);
+	idr_destroy(&private->mem_idr);
 
 	kfree(private);
 	return;
@@ -2088,12 +2087,12 @@ static int kgsl_setup_ion(struct kgsl_mem_entry *entry,
 {
 	struct ion_handle *handle;
 	struct scatterlist *s;
-	unsigned long flags;
+	struct sg_table *sg_table;
 
 	if (IS_ERR_OR_NULL(kgsl_ion_client))
 		return -ENODEV;
 
-	handle = ion_import_fd(kgsl_ion_client, fd);
+	handle = ion_import_dma_buf(kgsl_ion_client, fd);
 	if (IS_ERR(handle))
 		return PTR_ERR(handle);
 	else if (!handle)
@@ -2106,12 +2105,12 @@ static int kgsl_setup_ion(struct kgsl_mem_entry *entry,
 	/* USE_CPU_MAP is not impemented for ION. */
 	entry->memdesc.flags &= ~KGSL_MEMFLAGS_USE_CPU_MAP;
 
-	if (ion_handle_get_flags(kgsl_ion_client, handle, &flags))
+	sg_table = ion_sg_table(kgsl_ion_client, handle);
+
+	if (IS_ERR_OR_NULL(sg_table))
 		goto err;
 
-	entry->memdesc.sg = ion_map_dma(kgsl_ion_client, handle, flags);
-	if (IS_ERR_OR_NULL(entry->memdesc.sg))
-		goto err;
+	entry->memdesc.sg = sg_table->sgl;
 
 	/* Calculate the size of the memdesc from the sglist */
 
@@ -2263,7 +2262,6 @@ error_attach:
 			fput(entry->priv_data);
 		break;
 	case KGSL_MEM_ENTRY_ION:
-		ion_unmap_dma(kgsl_ion_client, entry->priv_data);
 		ion_free(kgsl_ion_client, entry->priv_data);
 		break;
 	default:
